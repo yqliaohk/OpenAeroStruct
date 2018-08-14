@@ -44,6 +44,8 @@ class ConvertVelocity(ExplicitComponent):
         cosa = np.cos(alpha)
         sina = np.sin(alpha)
 
+        # Using tile to flatten the Jacobian, the Jacobian should be a one-dimensional array, the default order is row-by-row.
+        # [[1,2,3],[1,2,3]] -> [1,2,3,1,2,3]
         Jv_v =  np.tile(np.array([cosa, 0., sina]), self.system_size)
         Jv_alpha = np.tile(inputs['v'][0] * np.array([-sina, 0., cosa]) * np.pi/180.,self.system_size)
         J['inflow_velocities','v'] = Jv_v
