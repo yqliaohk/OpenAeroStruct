@@ -1,20 +1,14 @@
 from __future__ import print_function, division
 import numpy as np
+from numpy import matlib
 
 from openmdao.api import ExplicitComponent
 
-try:
-    from openaerostruct.fortran import OAS_API
-    fortran_flag = True
-except:
-    fortran_flag = False
-
-data_type = float
 
 class LiftCoeff2D(ExplicitComponent):
     """
     Calculate 2D lift coefficient distribution based on section forces.
-    This is for one given lifting surface.
+    This is for one given lifting surface. These are the sectional Cls.
 
     Parameters
     ----------
@@ -46,8 +40,8 @@ class LiftCoeff2D(ExplicitComponent):
     def setup(self):
         self.surface = surface = self.options['surface']
 
-        self.ny = surface['num_y']
-        self.nx = surface['num_x']
+        self.nx = surface['mesh'].shape[0]
+        self.ny = surface['mesh'].shape[1]
         self.num_panels = (self.nx-1) * (self.ny-1)
 
         # Inputs
@@ -61,7 +55,20 @@ class LiftCoeff2D(ExplicitComponent):
         # Outputs
         self.add_output('Cl', val=np.zeros((self.ny-1)))
 
-        self.declare_partials('*', '*')
+        self.declare_partials('Cl', 'widths')
+        self.declare_partials('Cl', 'v')
+        self.declare_partials('Cl', 'rho')
+        self.declare_partials('Cl', 'alpha')
+
+        # Added to declare Jacobian sparse
+        arange = np.arange(self.ny - 1)
+        rows = np.tile(arange, 2)
+        cols = np.hstack((arange, arange+1))
+        self.declare_partials('Cl', 'chords', rows=rows, cols=cols)
+
+        rows = np.tile(np.repeat(arange, 3), self.nx-1)
+        cols = np.arange((self.ny-1)*(self.nx-1)*3)
+        self.declare_partials('Cl', 'sec_forces', rows=rows, cols=cols)
 
     def compute(self, inputs, outputs):
 
@@ -115,12 +122,20 @@ class LiftCoeff2D(ExplicitComponent):
                    ( 0.5 * rho * v**2 * chord[:] )
 
         # Analytic derivatives for sec_forces
-        tmp = np.array([-sina, 0, cosa])
-        for ix in range(self.nx-1):
-            for jy in range(self.ny-1):
-                for ind in range(3):
-                   partials['Cl', 'sec_forces'][jy, ix*(self.ny-1)*3 + jy*3 + ind] = \
-                       tmp[ind] / widths[jy] / ( 0.5 * rho * v**2 * chord[jy] )
+        tmp = np.concatenate((-sina, np.array([0]), cosa))
+
+
+#         ### Replaced to vectorize computation
+#         print(tmp)
+#         for ix in range(self.nx-1):
+#             for jy in range(self.ny-1):
+#                 for ind in range(3):
+#                    partials['Cl', 'sec_forces'][jy, ix*(self.ny-1)*3 + jy*3 + ind] = \
+#                        tmp[ind] / widths[jy] / ( 0.5 * rho * v**2 * chord[jy] )
+#
+        partials['Cl', 'sec_forces'] = np.ravel(matlib.repmat(np.einsum('i,j,j->ji', \
+                                                          tmp, 1/widths, \
+                                                          1/( 0.5 * rho * v**2 * chord )), self.nx-1,1))
 
         # Analytic derivatives for widths
         partials['Cl', 'widths'] = np.diag( -1./ widths[:]**2 * \
@@ -128,13 +143,18 @@ class LiftCoeff2D(ExplicitComponent):
                                ( 0.5 * rho * v**2 * chord[:] ) )
 
         # Analytic derivatives for chords
-        for iy in range(self.ny-1):
-            partials['Cl', 'chords'][iy,iy  ] = \
-                             -1. / ( 0.5 * (chords[iy] + chords[iy+1])**2 ) * \
-                             lift_dist[iy] / ( 0.5 * rho * v**2 )
-            partials['Cl', 'chords'][iy,iy+1] = \
-                             -1. / ( 0.5 * (chords[iy] + chords[iy+1])**2 ) * \
-                             lift_dist[iy] / ( 0.5 * rho * v**2 )
+        tmp_der =  -1/(0.5*(chords[:-1]+ chords[1:])**2)*lift_dist/( 0.5 * rho * v**2 )
+        partials['Cl', 'chords'] = list(tmp_der)*2
+
+#        ### Replaced to vectorize computation
+#         for iy in range(self.ny-1):
+#             partials['Cl', 'chords'][iy,iy  ] = \
+#                              -1. / ( 0.5 * (chords[iy] + chords[iy+1])**2 ) * \
+#                              lift_dist[iy] / ( 0.5 * rho * v**2 )
+#             partials['Cl', 'chords'][iy,iy+1] = \
+#                              -1. / ( 0.5 * (chords[iy] + chords[iy+1])**2 ) * \
+#                              lift_dist[iy] / ( 0.5 * rho * v**2 )
+#
 
         # Analytic derivatives for v
         partials['Cl', 'v'] = -2. / v**3 * \

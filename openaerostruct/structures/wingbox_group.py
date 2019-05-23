@@ -1,9 +1,4 @@
-from openmdao.api import Group, ExplicitComponent, BsplinesComp
-from openaerostruct.geometry.geometry_mesh import GeometryMesh
-from openaerostruct.geometry.geometry_group import Geometry
-from openaerostruct.structures.spatial_beam_states import SpatialBeamStates
-from openaerostruct.structures.spatial_beam_functionals import SpatialBeamFunctionals
-from openaerostruct.structures.spatial_beam_setup import SpatialBeamSetup
+from openmdao.api import Group, BsplinesComp
 from openaerostruct.structures.section_properties_wingbox import SectionPropertiesWingbox
 from openaerostruct.structures.wingbox_geometry import WingboxGeometry
 
@@ -18,7 +13,7 @@ class WingboxGroup(Group):
 
     def setup(self):
         surface = self.options['surface']
-        ny = surface['num_y']
+        ny = surface['mesh'].shape[1]
 
         if 'spar_thickness_cp' in surface.keys() or 'skin_thickness_cp' in surface.keys():
             # Add independent variables that do not belong to a specific component
@@ -34,7 +29,7 @@ class WingboxGroup(Group):
             # Add bspline components for active bspline geometric variables.
             self.add_subsystem('spar_thickness_bsp', BsplinesComp(
                 in_name='spar_thickness_cp', out_name='spar_thickness',
-                num_control_points=n_cp, num_points=int(ny-1),
+                num_control_points=n_cp, num_points=int(ny-1), units='m',
                 bspline_order=min(n_cp, 4), distribution='uniform'),
                 promotes_inputs=['spar_thickness_cp'], promotes_outputs=['spar_thickness'])
             indep_var_comp.add_output('spar_thickness_cp', val=surface['spar_thickness_cp'], units='m')
@@ -44,7 +39,7 @@ class WingboxGroup(Group):
             # Add bspline components for active bspline geometric variables.
             self.add_subsystem('skin_thickness_bsp', BsplinesComp(
                 in_name='skin_thickness_cp', out_name='skin_thickness',
-                num_control_points=n_cp, num_points=int(ny-1),
+                num_control_points=n_cp, num_points=int(ny-1), units='m',
                 bspline_order=min(n_cp, 4), distribution='uniform'),
                 promotes_inputs=['skin_thickness_cp'], promotes_outputs=['skin_thickness'])
             indep_var_comp.add_output('skin_thickness_cp', val=surface['skin_thickness_cp'], units='m')
@@ -56,5 +51,5 @@ class WingboxGroup(Group):
 
         self.add_subsystem('wingbox',
             SectionPropertiesWingbox(surface=surface),
-            promotes_inputs=['spar_thickness', 'skin_thickness', 'toverc', 'fem_chords', 'fem_twists', 'streamwise_chords'],
-            promotes_outputs=['A', 'Iy', 'Qz', 'Iz', 'J', 'A_enc', 'htop', 'hbottom', 'hfront', 'hrear'])
+            promotes_inputs=['spar_thickness', 'skin_thickness', 't_over_c', 'fem_chords', 'fem_twists', 'streamwise_chords'],
+            promotes_outputs=['A', 'Iy', 'Qz', 'Iz', 'J', 'A_enc', 'A_int', 'htop', 'hbottom', 'hfront', 'hrear'])

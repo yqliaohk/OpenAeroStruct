@@ -4,7 +4,8 @@ from openmdao.api import ExplicitComponent
 
 class TotalLift(ExplicitComponent):
     """
-    Calculate total lift in force units.
+    Calculate total lift in force units by summing the induced CL
+    with the CL0.
 
     Parameters
     ----------

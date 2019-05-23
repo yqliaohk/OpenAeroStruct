@@ -1,20 +1,12 @@
 from __future__ import division, print_function
-import numpy as np
 
 from openmdao.api import ExplicitComponent
-
-try:
-    from openaerostruct.fortran import OAS_API
-    fortran_flag = True
-    data_type = float
-except:
-    fortran_flag = False
-    data_type = complex
 
 
 class TotalLiftDrag(ExplicitComponent):
     """
-    Compute the coefficients of lift (CL) and drag (CD) for the entire aircraft.
+    Compute the coefficients of lift (CL) and drag (CD) for the entire aircraft,
+    based on the area-weighted sum of individual surfaces' CLs and CDs.
 
     Parameters
     ----------
@@ -43,15 +35,16 @@ class TotalLiftDrag(ExplicitComponent):
             self.add_input(name + '_CL', val=1.)
             self.add_input(name + '_CD', val=1.)
             self.add_input(name + '_S_ref', val=1., units='m**2')
-            self.declare_partials('CL', name + '_CD', dependent=False)
-            self.declare_partials('CD', name + '_CL', dependent=False)
+            self.declare_partials('CL', name + '_CL')
+            self.declare_partials('CD', name + '_CD')
+            self.declare_partials('CL', name + '_S_ref')
+            self.declare_partials('CD', name + '_S_ref')
 
         self.add_input('S_ref_total', val=1., units='m**2')
-
         self.add_output('CL', val=1.)
         self.add_output('CD', val=1.)
-
-        self.declare_partials('*', '*')
+        self.declare_partials('CL','S_ref_total')
+        self.declare_partials('CD','S_ref_total')
 
     def compute(self, inputs, outputs):
 

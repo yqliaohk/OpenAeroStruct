@@ -1,10 +1,8 @@
-from numpy.distutils.core import setup, Extension
-import os
-from subprocess import call
+from numpy.distutils.core import setup
 
 
 setup(name='openaerostruct',
-    version='2.0.0',
+    version='2.1.0',
     description='OpenAeroStruct',
     author='John Jasa',
     author_email='johnjasa@umich.edu',
@@ -16,7 +14,8 @@ setup(name='openaerostruct',
         'openaerostruct/aerodynamics',
         'openaerostruct/functionals',
         'openaerostruct/integration',
-        'openaerostruct/fortran',
+        'openaerostruct/common',
+        'openaerostruct/utils',
     ],
     # TODO: fix this with the correct requires
     install_requires=[],
@@ -25,5 +24,6 @@ setup(name='openaerostruct',
     entry_points="""
     [console_scripts]
     plot_wing=openaerostruct.utils.plot_wing:disp_plot
+    plot_wingbox=openaerostruct.utils.plot_wingbox:disp_plot
     """
 )

@@ -6,18 +6,35 @@ from openmdao.api import ImplicitComponent
 
 
 class SolveMatrix(ImplicitComponent):
+    """
+    Solve the AIC linear system to obtain the vortex ring circulations.
+
+    Parameters
+    ----------
+    mtx[system_size, system_size] : numpy array
+        Final fully assembled AIC matrix that is used to solve for the
+        circulations.
+    rhs[system_size] : numpy array
+        Right-hand side of the AIC linear system, constructed from the
+        freestream velocities and panel normals.
+
+    Returns
+    -------
+    circulations[system_size] : numpy array
+        The vortex ring circulations obtained by solving the AIC linear system.
+
+    """
 
     def initialize(self):
         self.options.declare('surfaces', types=list)
 
     def setup(self):
-        surfaces = self.options['surfaces']
-
         system_size = 0
 
         for surface in self.options['surfaces']:
-            nx = surface['num_x']
-            ny = surface['num_y']
+            mesh = surface['mesh']
+            nx = mesh.shape[0]
+            ny = mesh.shape[1]
 
             system_size += (nx - 1) * (ny - 1)
 
@@ -50,7 +67,6 @@ class SolveMatrix(ImplicitComponent):
 
     def linearize(self, inputs, outputs, partials):
         system_size = self.system_size
-
         self.lu = lu_factor(inputs['mtx'])
 
         partials['circulations', 'circulations'] = inputs['mtx'].flatten()

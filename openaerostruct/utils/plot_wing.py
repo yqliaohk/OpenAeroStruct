@@ -26,23 +26,20 @@ from six import iteritems
 import numpy as np
 from openmdao.recorders.sqlite_reader import SqliteCaseReader
 
-try:
-    import matplotlib
-    matplotlib.use('TkAgg')
-    matplotlib.rcParams['lines.linewidth'] = 2
-    matplotlib.rcParams['axes.edgecolor'] = 'gray'
-    matplotlib.rcParams['axes.linewidth'] = 0.5
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg,\
-        NavigationToolbar2Tk
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
-    from matplotlib import cm
-    import matplotlib.animation as manimation
-    import sqlitedict
-except:
-    print()
-    print("Correct plotting modules not available; please consult import list")
-    print()
+import matplotlib
+matplotlib.use('TkAgg')
+matplotlib.rcParams['lines.linewidth'] = 2
+matplotlib.rcParams['axes.edgecolor'] = 'gray'
+matplotlib.rcParams['axes.linewidth'] = 0.5
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg,\
+    NavigationToolbar2Tk
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
+import matplotlib.animation as manimation
+import sqlitedict
+
+from traceback import print_exc
 
 #####################
 # User-set parameters
@@ -96,16 +93,36 @@ class Display(object):
             self.ax5 = plt.subplot2grid((4, 8), (3, 4), colspan=4)
 
     def load_db(self):
-        cr = self.case_reader = SqliteCaseReader(self.db_name)
-        cr.load_cases()
-        last_case = cr.driver_cases.get_case(-1)
+        cr = self.case_reader = SqliteCaseReader(self.db_name, pre_load=True)
+        last_case = next(reversed(cr.get_cases('driver')))
+
+        names = []
+
+        # Aero or aerostructural
+        for key in cr.system_metadata.keys():
+            try:
+                surfaces = cr.system_metadata[key]['component_options']['surfaces']
+                for surface in surfaces:
+                    names.append(surface['name'])
+                break
+            except:
+                pass
+
+        # Structural-only
+        if not names:
+            for key in cr.system_metadata.keys():
+                try:
+                    surface = cr.system_metadata[key]['component_options']['surface']
+                    names = [surface['name']]
+                except:
+                    pass
 
         # figure out if this is an optimization and what the objective is
         obj_keys = last_case.get_objectives()
-        try: # if its not an empty list
-            self.obj_key = obj_keys.keys[0]
+        if obj_keys.keys(): # if its not an empty list
             self.opt = True
-        except IndexError:
+            self.obj_key = list(obj_keys.keys())[0]
+        else:
             self.opt = False
 
         self.twist = []
@@ -127,41 +144,23 @@ class Display(object):
         self.S_ref = []
         self.obj = []
         self.cg = []
+        self.point_mass_locations = []
 
-        # figure out if twist is a desvar
-        self.twist_included = False
-        for dv_name in last_case.get_desvars():
-            if 'twist' in dv_name:
-                self.twist_included = True
-                break
-
-        # find the names of all surfaces
-        names = []
         pt_names = []
         for key in last_case.outputs:
-            # Aerostructural
-            if 'coupled' in key and 'loads' in key:
+            if 'coupled' in key:
                 self.aerostruct = True
-                # convoluted way to get the surface name from `<point_name>.coupled.<surf_name>_loads`
-                surf_name = (key.split('.')[2]).split("_")[0]
-                names.append(surf_name)
 
-            # Aero only
-            elif 'sec_forces' in key and 'coupled' not in key:
-                surf_name = (key.split('.')[2]).split("_")[0]
-                names.append(surf_name)
-
-            # Structural only
-            elif 'disp_aug' in key and 'coupled' not in key:
-                surf_name = key.split('.')[0]
-                names.append(surf_name)
-
+        for key in last_case.outputs:
             if 'CL' in key:
                 pt_names.append(key.split('.')[0])
+                break
 
         if pt_names:
             self.pt_names = pt_names = list(set(pt_names))
             pt_name = pt_names[0]
+        else:
+            pt_names = ['']
         self.names = names
         n_names = len(names)
 
@@ -182,7 +181,7 @@ class Display(object):
                     self.mesh.append(case.outputs[name+'.mesh'])
 
                     try:
-                        self.radius.append(case.outputs[name+'.radius'])
+                        self.radius.append(np.squeeze(case.outputs[name+'.radius']))
                         self.thickness.append(case.outputs[name+'.thickness'])
                         self.vonmises.append(
                             np.max(case.outputs[name+'.vonmises'], axis=1))
@@ -204,7 +203,7 @@ class Display(object):
                     self.show_wing, self.show_tube = True, True
 
                     self.mesh.append(case.outputs[name+'.mesh'])
-                    self.radius.append(case.outputs[name+'.radius'])
+                    self.radius.append(np.squeeze(case.outputs[name+'.radius']))
                     self.thickness.append(case.outputs[name+'.thickness'])
 
                     vm_var_name = '{pt_name}.{surf_name}_perf.vonmises'.format(pt_name=pt_name, surf_name=name)
@@ -228,11 +227,14 @@ class Display(object):
 
                 # Not the best solution for now, but this will ensure
                 # that this plots correctly even if twist isn't a desvar
-                if self.twist_included:
-                    self.twist.append(case.outputs[name+'.geometry.twist'])
-                else:
+                try:
+                    if self.aerostruct: # twist is handled differently for aero and aerostruct
+                        self.twist.append(case.outputs[name+'.geometry.twist'])
+                    else:
+                        self.twist.append(case.outputs[name+'.twist'])
+                except:
                     ny = self.mesh[0].shape[1]
-                    self.twist.append(np.zeros(ny))
+                    self.twist.append(np.atleast_2d(np.zeros(ny)))
 
             if self.show_wing:
                 alpha.append(case.outputs['alpha'] * np.pi / 180.)
@@ -242,6 +244,14 @@ class Display(object):
                     self.cg.append(case.outputs['{pt_name}.cg'.format(pt_name=pt_name)])
                 else:
                     self.cg.append(case.outputs['cg'])
+
+            # If there are point masses, save them
+            try:
+                self.point_mass_locations.append(case.outputs['point_mass_locations'])
+                self.point_masses_exist = True
+            except:
+                self.point_masses_exist = False
+                pass
 
         self.fem_origin_dict = {}
         self.yield_stress_dict = {}
@@ -255,7 +265,7 @@ class Display(object):
         if self.opt:
             self.num_iters = np.max([int(len(self.mesh) / n_names) - 1, 1])
         else:
-            self.num_iters = 0
+            self.num_iters = 1
 
         symm_count = 0
         for mesh in self.mesh:
@@ -279,8 +289,7 @@ class Display(object):
                 new_def_mesh = []
                 new_widths = []
                 new_normals = []
-
-            for i in range(self.num_iters + 1):
+            for i in range(self.num_iters):
                 for j, name in enumerate(names):
                     mirror_mesh = self.mesh[i*n_names+j].copy()
                     mirror_mesh[:, :, 1] *= -1.
@@ -289,7 +298,7 @@ class Display(object):
 
                     if self.show_tube:
                         thickness = self.thickness[i*n_names+j]
-                        new_thickness.append(np.hstack((thickness, thickness[::-1])))
+                        new_thickness.append(np.hstack((thickness[0], thickness[0][::-1])))
                         r = self.radius[i*n_names+j]
                         new_r.append(np.hstack((r, r[::-1])))
                         vonmises = self.vonmises[i*n_names+j]
@@ -322,16 +331,12 @@ class Display(object):
                 self.def_mesh = new_def_mesh
                 self.twist = new_twist
                 widths = new_widths
-                normals = new_normals
                 sec_forces = new_sec_forces
 
         if self.show_wing:
-            for i in range(self.num_iters + 1):
+            for i in range(self.num_iters):
                 for j, name in enumerate(names):
                     m_vals = self.mesh[i*n_names+j].copy()
-                    cvec = m_vals[0, :, :] - m_vals[-1, :, :]
-                    chords = np.sqrt(np.sum(cvec**2, axis=1))
-                    chords = 0.5 * (chords[1:] + chords[:-1])
                     a = alpha[i]
                     cosa = np.cos(a)
                     sina = np.sin(a)
@@ -339,7 +344,7 @@ class Display(object):
                     forces = np.sum(sec_forces[i*n_names+j], axis=0)
 
                     lift = (-forces[:, 0] * sina + forces[:, 2] * cosa) / \
-                        widths[i*n_names+j]/0.5/rho[i]/v[i]**2
+                        widths[i*n_names+j]/0.5/rho[i][0]/v[i][0]**2
 
                     span = (m_vals[0, :, 1] / (m_vals[0, -1, 1] - m_vals[0, 0, 1]))
                     span = span - (span[0] + .5)
@@ -355,16 +360,18 @@ class Display(object):
                     self.AR.append(wingspan**2 / self.S_ref[i*n_names+j])
 
             # recenter def_mesh points for better viewing
-            for i in range(self.num_iters + 1):
+            for i in range(self.num_iters):
                 center = np.zeros((3))
                 for j in range(n_names):
                     center += np.mean(self.def_mesh[i*n_names+j], axis=(0,1))
                 for j in range(n_names):
                     self.def_mesh[i*n_names+j] -= center / n_names
                 self.cg[i] -= center / n_names
+                if self.point_masses_exist:
+                    self.point_mass_locations[i] -= center / n_names
 
         # recenter mesh points for better viewing
-        for i in range(self.num_iters + 1):
+        for i in range(self.num_iters):
             center = np.zeros((3))
             for j in range(n_names):
                 center += np.mean(self.mesh[i*n_names+j], axis=(0,1))
@@ -444,18 +451,16 @@ class Display(object):
             span_diff = ((m_vals[0, :-1, 1] + m_vals[0, 1:, 1]) / 2 - m_vals[0, 0, 1]) * 2 / span - 1
 
             if self.show_wing:
-                t_vals = self.twist[self.curr_pos*n_names+j]
+                t_vals = self.twist[self.curr_pos*n_names+j].squeeze()
                 l_vals = self.lift[self.curr_pos*n_names+j]
                 le_vals = self.lift_ell[self.curr_pos*n_names+j]
-
                 self.ax2.plot(rel_span, t_vals, lw=2, c='b')
                 self.ax3.plot(rel_span, le_vals, '--', lw=2, c='g')
                 self.ax3.plot(span_diff, l_vals, lw=2, c='b')
 
             if self.show_tube:
-                thick_vals = self.thickness[self.curr_pos*n_names+j][0]
+                thick_vals = self.thickness[self.curr_pos*n_names+j]
                 vm_vals = self.vonmises[self.curr_pos*n_names+j]
-
                 self.ax4.plot(span_diff, thick_vals, lw=2, c='b')
                 self.ax5.plot(span_diff, vm_vals, lw=2, c='b')
 
@@ -498,13 +503,19 @@ class Display(object):
                 except:
                     self.ax.plot_wireframe(x, y, z, rstride=1, cstride=1, color='k')
 
-                cg = self.cg[self.curr_pos]
+                # cg = self.cg[self.curr_pos]
                 # self.ax.scatter(cg[0], cg[1], cg[2], s=100, color='r')
+
+                if self.point_masses_exist:
+                    for point_mass_loc in self.point_mass_locations[self.curr_pos]:
+                        self.ax.scatter(point_mass_loc[0], point_mass_loc[1], point_mass_loc[2], s=100, color='b')
+                        if self.symmetry:
+                            self.ax.scatter(point_mass_loc[0], -point_mass_loc[1], point_mass_loc[2], s=100, color='b')
 
             if self.show_tube:
                 # Get the array of radii and thickness values for the FEM system
                 r0 = self.radius[self.curr_pos*n_names+j]
-                t0 = self.thickness[self.curr_pos*n_names+j][0]
+                t0 = self.thickness[self.curr_pos*n_names+j]
 
                 # Create a normalized array of values for the colormap
                 colors = t0
@@ -513,9 +524,6 @@ class Display(object):
                 # Set the number of rectangular patches on the cylinder
                 num_circ = 12
                 fem_origin = self.fem_origin_dict[name.split('.')[-1] + '_fem_origin']
-
-                # Get the number of spanwise nodal points
-                n = mesh0.shape[1]
 
                 # Create an array of angles around a circle
                 p = np.linspace(0, 2*np.pi, num_circ)
@@ -609,7 +617,7 @@ class Display(object):
     def update_graphs(self, e=None):
         if e is not None:
             self.curr_pos = int(e)
-            self.curr_pos = self.curr_pos % (self.num_iters + 1)
+            self.curr_pos = self.curr_pos % (self.num_iters)
 
         self.plot_wing()
         self.plot_sides()
@@ -617,11 +625,11 @@ class Display(object):
 
     def check_length(self):
         # Load the current sqlitedict
-        db = sqlitedict.SqliteDict(self.db_name, 'iterations')
+        cr = self.case_reader = SqliteCaseReader(self.db_name)
 
         # Get the number of current iterations
         # Minus one because OpenMDAO uses 1-indexing
-        self.num_iters = int(db.keys()[-1].split('|')[-1])
+        self.num_iters = len(cr.get_cases('driver'))
 
     def get_list_limits(self, input_list):
         list_min = 1.e20
@@ -669,7 +677,7 @@ class Display(object):
         # scale to choose iteration to view
         self.w = Tk.Scale(
             self.options_frame,
-            from_=0, to=self.num_iters,
+            from_=0, to=self.num_iters - 1,
             orient=Tk.HORIZONTAL,
             resolution=1,
             font=tkFont.Font(family="Helvetica", size=10),
@@ -677,7 +685,7 @@ class Display(object):
             length=200)
 
         if self.curr_pos == self.num_iters - 1 or self.curr_pos == 0 or self.var_ref.get():
-            self.curr_pos = self.num_iters
+            self.curr_pos = self.num_iters - 1
         self.w.set(self.curr_pos)
         self.w.grid(row=0, column=1, padx=5, sticky=Tk.W)
 

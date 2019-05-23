@@ -3,13 +3,6 @@ import numpy as np
 
 from openmdao.api import ExplicitComponent
 
-try:
-    from openaerostruct.fortran import OAS_API
-    fortran_flag = True
-    data_type = float
-except:
-    fortran_flag = False
-    data_type = complex
 
 class Energy(ExplicitComponent):
     """ Compute strain energy.
@@ -35,7 +28,7 @@ class Energy(ExplicitComponent):
     def setup(self):
         surface = self.options['surface']
 
-        ny = surface['num_y']
+        ny = surface['mesh'].shape[1]
 
         self.add_input('disp', val=np.zeros((ny, 6)), units='m')
         self.add_input('loads', val=np.zeros((ny, 6)), units='N')

@@ -1,4 +1,5 @@
 from __future__ import print_function, division
+
 import numpy as np
 from numpy import cos, sin, tan
 
@@ -31,8 +32,7 @@ def rotate(mesh, theta_y, symmetry, rotate_x=True):
     le = mesh[ 0]
     quarter_chord = 0.25 * te + 0.75 * le
 
-    ny = mesh.shape[1]
-    nx = mesh.shape[0]
+    nx, ny, _ = mesh.shape
 
     if rotate_x:
         # Compute spanwise z displacements along quarter chord
@@ -60,19 +60,24 @@ def rotate(mesh, theta_y, symmetry, rotate_x=True):
 
     rad_theta_y = theta_y * np.pi / 180.
 
-    mats = np.zeros((ny, 3, 3), dtype="complex")
-    mats[:, 0, 0] = cos(rad_theta_y)
-    mats[:, 0, 2] = sin(rad_theta_y)
-    mats[:, 1, 0] = sin(rad_theta_x)*sin(rad_theta_y)
-    mats[:, 1, 1] = cos(rad_theta_x)
-    mats[:, 1, 2] = -sin(rad_theta_x)*cos(rad_theta_y)
-    mats[:, 2, 0] = -cos(rad_theta_x)*sin(rad_theta_y)
-    mats[:, 2, 1] = sin(rad_theta_x)
-    mats[:, 2, 2] = cos(rad_theta_x)*cos(rad_theta_y)
-    for ix in range(nx):
-        row = mesh[ix]
-        row[:] = np.einsum("ikj, ij -> ik", mats, row - quarter_chord)
-        row += quarter_chord
+    mats = np.zeros((ny, 3, 3), dtype=type(rad_theta_y[0]))
+
+    cos_rtx = cos(rad_theta_x)
+    cos_rty = cos(rad_theta_y)
+    sin_rtx = sin(rad_theta_x)
+    sin_rty = sin(rad_theta_y)
+
+    mats[:, 0, 0] = cos_rty
+    mats[:, 0, 2] = sin_rty
+    mats[:, 1, 0] = sin_rtx * sin_rty
+    mats[:, 1, 1] = cos_rtx
+    mats[:, 1, 2] = -sin_rtx * cos_rty
+    mats[:, 2, 0] = -cos_rtx * sin_rty
+    mats[:, 2, 1] = sin_rtx
+    mats[:, 2, 2] = cos_rtx*cos_rty
+
+    mesh[:] = np.einsum("ikj, mij -> mik", mats, mesh - quarter_chord) + quarter_chord
+
 
 def scale_x(mesh, chord_dist):
     """
@@ -194,8 +199,8 @@ def sweep(mesh, sweep_angle, symmetry):
         dx_left = -(le[:ny2, 1] - y0) * tan_theta
         dx = np.hstack((dx_left, dx_right))
 
-    for i in range(num_x):
-        mesh[i, :, 0] += dx
+    # dx added spanwise.
+    mesh[:, :, 0] += dx
 
 def dihedral(mesh, dihedral_angle, symmetry):
     """
@@ -236,8 +241,8 @@ def dihedral(mesh, dihedral_angle, symmetry):
         dz_left = -(le[:ny2, 1] - y0) * tan_theta
         dz = np.hstack((dz_left, dz_right))
 
-    for i in range(num_x):
-        mesh[i, :, 2] += dz
+    # dz added spanwise.
+    mesh[:, :, 2] += dz
 
 
 def stretch(mesh, span, symmetry):
@@ -302,35 +307,26 @@ def taper(mesh, taper_ratio, symmetry):
     te = mesh[-1]
     num_x, num_y, _ = mesh.shape
     quarter_chord = 0.25 * te + 0.75 * le
+    x = quarter_chord[:, 1]
+    span = x[-1] - x[0]
 
     # If symmetric, solve for the correct taper ratio, which is a linear
     # interpolation problem
     if symmetry:
-        x = quarter_chord[:, 1]
-        span = x[-1] - x[0]
         xp = np.array([-span, 0.])
         fp = np.array([taper_ratio, 1.])
-        taper = np.interp(x.real, xp.real, fp.real)
-
-        # Modify the mesh based on the taper amount computed per spanwise section
-        for i in range(num_x):
-            for ind in range(3):
-                mesh[i, :, ind] = (mesh[i, :, ind] - quarter_chord[:, ind]) * \
-                    taper + quarter_chord[:, ind]
 
     # Otherwise, we set up an interpolation problem for the entire wing, which
     # consists of two linear segments
     else:
-        x = quarter_chord[:, 1]
-        span = x[-1] - x[0]
         xp = np.array([-span/2, 0., span/2])
         fp = np.array([taper_ratio, 1., taper_ratio])
-        taper = np.interp(x.real, xp.real, fp.real)
 
-        for i in range(num_x):
-            for ind in range(3):
-                mesh[i, :, ind] = (mesh[i, :, ind] - quarter_chord[:, ind]) * \
-                    taper + quarter_chord[:, ind]
+    taper = np.interp(x.real, xp.real, fp.real)
+
+    # Modify the mesh based on the taper amount computed per spanwise section
+    mesh[:] = np.einsum('ijk, j->ijk', mesh - quarter_chord, taper) + quarter_chord
+
 
 def gen_rect_mesh(num_x, num_y, span, chord, span_cos_spacing=0., chord_cos_spacing=0.):
     """
@@ -517,15 +513,13 @@ def gen_crm_mesh(num_x, num_y, span_cos_spacing=0., chord_cos_spacing=0., wing_t
     # That is just one half of the mesh and we later expect the full mesh,
     # even if we're using symmetry == True.
     # So here we mirror and stack the two halves of the wing.
-    left_half = mesh.copy()
-    left_half[:, :, 1] *= -1.
-    mesh = np.hstack((left_half[:, ::-1, :], mesh[:, 1:, :]))
+    full_mesh = getFullMesh(right_mesh=mesh)
 
     # If we need to add chordwise panels, do so
     if num_x > 2:
-        mesh = add_chordwise_panels(mesh, num_x, chord_cos_spacing)
+        full_mesh = add_chordwise_panels(full_mesh, num_x, chord_cos_spacing)
 
-    return mesh, eta, twist
+    return full_mesh, eta, twist
 
 
 def add_chordwise_panels(mesh, num_x, chord_cos_spacing):
@@ -555,7 +549,6 @@ def add_chordwise_panels(mesh, num_x, chord_cos_spacing):
 
     # Obtain mesh and num properties
     num_y = mesh.shape[1]
-    ny2 = (num_y + 1) // 2
     nx2 = (num_x + 1) // 2
 
     # Create beta, an array of linear sampling points to pi/2
@@ -714,16 +707,6 @@ def generate_mesh(input_dict):
 
         return mesh
 
-
-def view_mat(mat):
-    """ Helper function used to visually examine matrices. """
-    import matplotlib.pyplot as plt
-    if len(mat.shape) > 2:
-        mat = np.sum(mat, axis=2)
-    im = plt.imshow(mat.real, interpolation='none')
-    plt.colorbar(im, orientation='horizontal')
-    plt.show()
-
 def write_FFD_file(surface, mx, my):
 
     mesh = surface['mesh']
@@ -762,66 +745,66 @@ def write_FFD_file(surface, mx, my):
 
     ffd = np.vstack((bottom_ffd, top_ffd))
 
-    if 0:
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
-
-        fig = plt.figure()
-        axes = []
-
-        axes.append(fig.add_subplot(221, projection='3d'))
-        axes.append(fig.add_subplot(222, projection='3d'))
-        axes.append(fig.add_subplot(223, projection='3d'))
-        axes.append(fig.add_subplot(224, projection='3d'))
-
-        for i, ax in enumerate(axes):
-            xs = ffd[:, :, 0].flatten()
-            ys = ffd[:, :, 1].flatten()
-            zs = ffd[:, :, 2].flatten()
-
-            ax.scatter(xs, ys, zs, c='red', alpha=1., clip_on=False)
-
-            xs = ffd[:, :, 0].flatten()
-            ys = ffd[:, :, 1].flatten()
-            zs = ffd[:, :, 2].flatten()
-
-            ax.scatter(xs, ys, zs, c='blue', alpha=1.)
-
-            xs = mesh[:, :, 0]
-            ys = mesh[:, :, 1]
-            zs = mesh[:, :, 2]
-
-            ax.plot_wireframe(xs, ys, zs, color='k')
-
-            ax.set_xlim([-5, 5])
-            ax.set_ylim([-5, 5])
-            ax.set_zlim([-5, 5])
-
-            ax.set_xlim([20, 40])
-            ax.set_ylim([-25, -5.])
-            ax.set_zlim([-10, 10])
-
-            ax.set_xlabel('x')
-            ax.set_ylabel('y')
-            ax.set_zlabel('z')
-
-            ax.set_axis_off()
-
-            ax.set_axis_off()
-
-            if i == 0:
-                ax.view_init(elev=0, azim=180)
-            elif i == 1:
-                ax.view_init(elev=0, azim=90)
-            elif i == 2:
-                ax.view_init(elev=100000, azim=0)
-            else:
-                ax.view_init(elev=40, azim=-30)
-
-        plt.tight_layout()
-        plt.subplots_adjust(wspace=0, hspace=0)
-
-        plt.show()
+    # ### Uncomment this to plot the FFD points
+    # import matplotlib.pyplot as plt
+    # from mpl_toolkits.mplot3d import Axes3D
+    #
+    # fig = plt.figure()
+    # axes = []
+    #
+    # axes.append(fig.add_subplot(221, projection='3d'))
+    # axes.append(fig.add_subplot(222, projection='3d'))
+    # axes.append(fig.add_subplot(223, projection='3d'))
+    # axes.append(fig.add_subplot(224, projection='3d'))
+    #
+    # for i, ax in enumerate(axes):
+    #     xs = ffd[:, :, 0].flatten()
+    #     ys = ffd[:, :, 1].flatten()
+    #     zs = ffd[:, :, 2].flatten()
+    #
+    #     ax.scatter(xs, ys, zs, c='red', alpha=1., clip_on=False)
+    #
+    #     xs = ffd[:, :, 0].flatten()
+    #     ys = ffd[:, :, 1].flatten()
+    #     zs = ffd[:, :, 2].flatten()
+    #
+    #     ax.scatter(xs, ys, zs, c='blue', alpha=1.)
+    #
+    #     xs = mesh[:, :, 0]
+    #     ys = mesh[:, :, 1]
+    #     zs = mesh[:, :, 2]
+    #
+    #     ax.plot_wireframe(xs, ys, zs, color='k')
+    #
+    #     ax.set_xlim([-5, 5])
+    #     ax.set_ylim([-5, 5])
+    #     ax.set_zlim([-5, 5])
+    #
+    #     ax.set_xlim([20, 40])
+    #     ax.set_ylim([-25, -5.])
+    #     ax.set_zlim([-10, 10])
+    #
+    #     ax.set_xlabel('x')
+    #     ax.set_ylabel('y')
+    #     ax.set_zlabel('z')
+    #
+    #     ax.set_axis_off()
+    #
+    #     ax.set_axis_off()
+    #
+    #     if i == 0:
+    #         ax.view_init(elev=0, azim=180)
+    #     elif i == 1:
+    #         ax.view_init(elev=0, azim=90)
+    #     elif i == 2:
+    #         ax.view_init(elev=100000, azim=0)
+    #     else:
+    #         ax.view_init(elev=40, azim=-30)
+    #
+    # plt.tight_layout()
+    # plt.subplots_adjust(wspace=0, hspace=0)
+    #
+    # plt.show()
 
     filename = surface['name'] + '_ffd.fmt'
 
@@ -837,3 +820,114 @@ def write_FFD_file(surface, mx, my):
         f.write(z)
 
     return filename
+
+def writeMesh(mesh,filename):
+    """
+    Writes the OAS mesh in Tecplot .dat file format, for visualization and debugging purposes.
+
+    Parameters
+    ----------
+    mesh[nx,ny,3] : numpy array
+        The OAS mesh to be written.
+    filename : str
+        The file name including the .dat extension.
+    """
+    num_y = mesh.shape[0]
+    num_x = mesh.shape[1]
+    f = open(filename, 'w')
+    f.write('\t\t1\n')
+    f.write('\t\t%d\t\t%d\t\t%d\n' % (num_y, num_x, 1))
+
+    x = mesh[:, :, 0]
+    y = mesh[:, :, 1]
+    z = mesh[:, :, 2]
+
+    for dim in [x, y, z]:
+        for iy in range(num_x):
+            row = dim[:, iy]
+            for val in row:
+                f.write('\t{: 3.6f}'.format(val))
+            f.write('\n')
+    f.close()
+
+
+def getFullMesh(left_mesh=None, right_mesh=None):
+    """
+    For a symmetric wing, OAS only keeps and does computation on the left half.
+    This script mirros the OAS mesh and attaches it to the existing mesh to
+    obtain the full mesh.
+
+    Parameters
+    ----------
+    left_mesh[nx,ny,3] or right_mesh : numpy array
+        The half mesh to be mirrored.
+
+    Returns
+    -------
+    full_mesh[nx,2*ny-1,3] : numpy array
+        The computed full mesh.
+    """
+    if left_mesh is None and right_mesh is None:
+        raise ValueError("Either the left or right mesh need to be supplied.")
+    elif left_mesh is not None and right_mesh is not None:
+        raise ValueError("Please only provide either left or right mesh, not both.")
+    elif left_mesh is not None:
+        right_mesh = np.flip(left_mesh,axis=1).copy()
+        right_mesh[:,:,1] *= -1
+    else:
+        left_mesh = np.flip(right_mesh,axis=1).copy()
+        left_mesh[:,:,1] *= -1
+    full_mesh = np.concatenate((left_mesh,right_mesh[:,1:,:]),axis=1)
+    return full_mesh
+
+
+def plot3D_meshes(file_name, zero_tol=0):
+    """
+    Reads in multi-surface meshes from a Plot3D mesh file for VLM analysis.
+
+    Parameters
+    ----------
+    fileName : str
+        Plot3D file name to be read in.
+    zero_tol : float
+        If a node location read in the file is below this magnitude we will just
+        make it zero. This is useful for getting rid of noise in the surface
+        that may be due to the meshing tools geometry tolerance.
+
+    Returns
+    -------
+    mesh_dict : dict
+        Dictionary holding the mesh of every surface included in the plot3D
+        sorted by surface name.
+    """
+    file_handle = open(file_name, 'r')
+    num_panels = int(file_handle.readline())
+    # Get the multi-block dimensions of every included surface
+    block_dims = file_handle.readline().split()
+
+    # Now loop through remainder of file and pluck out mesh node locations
+    mesh_list = []
+    mesh_dict = {}
+    for i in range(num_panels):
+        [nx, ny, nz] = block_dims[3*i:3*i+3]
+        # Use nx and ny to intialize mesh. Since these are surfaces nz always
+        # equals 1, so no need to use it
+        mesh = np.zeros(int(nx)*int(ny)*3)
+
+        for j in range(mesh.size):
+            line = file_handle.readline()
+            val = float(line)
+            if np.abs(val) < zero_tol:
+                val = 0
+            mesh[j] = val
+
+        # Restructure mesh as 3D array,
+        # Plot3D files are always written using Fortran order
+        mesh_list.append(mesh.reshape([int(nx), int(ny), 3], order='f'))
+
+    # Now read in names for each surface mesh
+    for i in range(num_panels):
+        name = file_handle.readline()[:-1]
+        mesh_dict[name] = mesh_list[i]
+
+    return mesh_dict

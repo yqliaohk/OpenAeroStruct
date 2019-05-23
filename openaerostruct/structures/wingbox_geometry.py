@@ -6,33 +6,21 @@ from openaerostruct.structures.utils import norm
 
 class WingboxGeometry(ExplicitComponent):
     """
-    OpenMDAO component that performs mesh manipulation functions. It reads in
-    the initial mesh from the surface dictionary and outputs the altered
-    mesh based on the geometric design variables.
-
-    Depending on the design variables selected or the supplied geometry information,
-    only some of the follow parameters will actually be given to this component.
-    If parameters are not active (they do not deform the mesh), then
-    they will not be given to this component.
+    Compute effective chord lengths and twists normal to the wingbox elements.
 
     Parameters
     ----------
-    sweep : float
-        Shearing sweep angle in degrees.
-    dihedral : float
-        Dihedral angle in degrees.
-    twist[ny] : numpy array
-        1-D array of rotation angles for each wing slice in degrees.
-    chord_dist[ny] : numpy array
-        Chord length for each panel edge.
-    taper : float
-        Taper ratio for the wing; 1 is untapered, 0 goes to a point at the tip.
+    mesh[nx, ny, 3] : numpy array
+        VLM mesh
 
     Returns
     -------
-    mesh[nx, ny, 3] : numpy array
-        Modified mesh based on the initial mesh in the surface dictionary and
-        the geometric design variables.
+    streamwise_chords[ny-1] : numpy array
+        Average streamwise chord lengths for each streamwise VLM panel.
+    fem_chords[ny-1] : numpy array
+        Effective chord lengths normal to the FEM elements.
+    fem_twists[ny-1] : numpy array
+        Twist angles in planes normal to the FEM elements.
     """
 
     def initialize(self):
@@ -40,15 +28,16 @@ class WingboxGeometry(ExplicitComponent):
 
     def setup(self):
         self.surface = self.options['surface']
-        nx, ny = self.surface['num_x'], self.surface['num_y']
+        mesh = self.surface['mesh']
+        nx, ny = mesh.shape[0], mesh.shape[1]
 
-        self.add_input('mesh', val=np.zeros((nx, ny, 3)))
+        self.add_input('mesh', val=np.zeros((nx, ny, 3)),units='m')
 
-        self.add_output('streamwise_chords', val=np.ones((ny - 1)))
-        self.add_output('fem_chords', val=np.ones((ny - 1)))
-        self.add_output('fem_twists', val=np.ones((ny - 1)))
+        self.add_output('streamwise_chords', val=np.ones((ny - 1)),units='m')
+        self.add_output('fem_chords', val=np.ones((ny - 1)),units='m')
+        self.add_output('fem_twists', val=np.ones((ny - 1)),units='deg')
 
-        self.declare_partials('*', '*', method='cs')
+        self.declare_partials('*', '*', method='fd')
 
     def compute(self, inputs, outputs):
         mesh = inputs['mesh']
@@ -59,7 +48,7 @@ class WingboxGeometry(ExplicitComponent):
         # Chord lengths for the panel strips at the panel midpoint
         outputs['streamwise_chords'] = streamwise_chords.copy()
 
-        fem_twists = np.zeros(streamwise_chords.shape)
+        fem_twists = np.zeros(streamwise_chords.shape, dtype=type(mesh[0, 0, 0]))
         fem_chords = streamwise_chords.copy()
 
         surface = self.surface
@@ -121,5 +110,4 @@ class WingboxGeometry(ExplicitComponent):
                 theta_1 = np.arccos(cos_twist_1)
 
             fem_twists[ielem] = (theta_0 + theta_1) / 2 * streamwise_chords[ielem] / fem_chords[ielem]
-
         outputs['fem_twists'] = fem_twists

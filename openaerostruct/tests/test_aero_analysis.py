@@ -26,7 +26,6 @@ class Test(unittest.TestCase):
         surf_dict = {
                     # Wing definition
                     'name' : 'wing',        # name of the surface
-                    'type' : 'aero',
                     'symmetry' : True,     # if true, model one half of wing
                                             # reflected across the plane y = 0
                     'S_ref_type' : 'wetted', # how we compute the wing area,
@@ -35,8 +34,6 @@ class Test(unittest.TestCase):
 
                     'twist_cp' : twist_cp,
                     'mesh' : mesh,
-                    'num_x' : mesh.shape[0],
-                    'num_y' : mesh.shape[1],
 
                     # Aerodynamic performance of the lifting surface at
                     # an angle of attack of 0 (alpha=0).
@@ -50,10 +47,11 @@ class Test(unittest.TestCase):
                     # Airfoil properties for viscous drag calculation
                     'k_lam' : 0.05,         # percentage of chord with laminar
                                             # flow, used for viscous drag
-                    't_over_c' : 0.15,      # thickness over chord ratio (NACA0015)
+                    't_over_c_cp' : np.array([0.15]),      # thickness over chord ratio (NACA0015)
                     'c_max_t' : .303,       # chordwise location of maximum (NACA0015)
                                             # thickness
                     'with_viscous' : True,  # if true, compute viscous drag
+                    'with_wave' : False,     # if true, compute wave drag
                     }
 
         surfaces = [surf_dict]
@@ -63,8 +61,8 @@ class Test(unittest.TestCase):
 
         indep_var_comp = IndepVarComp()
         indep_var_comp.add_output('v', val=248.136, units='m/s')
-        indep_var_comp.add_output('alpha', val=5.)
-        indep_var_comp.add_output('M', val=0.84)
+        indep_var_comp.add_output('alpha', val=5., units='deg')
+        indep_var_comp.add_output('Mach_number', val=0.84)
         indep_var_comp.add_output('re', val=1.e6, units='1/m')
         indep_var_comp.add_output('rho', val=0.38, units='kg/m**3')
         indep_var_comp.add_output('cg', val=np.zeros((3)), units='m')
@@ -94,7 +92,7 @@ class Test(unittest.TestCase):
             # Connect flow properties to the analysis point
             prob.model.connect('v', point_name + '.v')
             prob.model.connect('alpha', point_name + '.alpha')
-            prob.model.connect('M', point_name + '.M')
+            prob.model.connect('Mach_number', point_name + '.Mach_number')
             prob.model.connect('re', point_name + '.re')
             prob.model.connect('rho', point_name + '.rho')
             prob.model.connect('cg', point_name + '.cg')
@@ -111,9 +109,12 @@ class Test(unittest.TestCase):
                 # 'aero_states' group.
                 prob.model.connect(name + '.mesh', point_name + '.aero_states.' + name + '_def_mesh')
 
+                prob.model.connect(name + '.t_over_c', point_name + '.' + name + '_perf.' + 't_over_c')
+
         recorder = SqliteRecorder("aero_analysis.db")
         prob.driver.add_recorder(recorder)
         prob.driver.recording_options['record_derivatives'] = True
+        prob.driver.recording_options['includes'] = ['*']
 
         # Set up the problem
         prob.setup()
@@ -125,7 +126,7 @@ class Test(unittest.TestCase):
 
         assert_rel_error(self, prob['aero_point_0.wing_perf.CD'][0], 0.038041969673747206, 1e-6)
         assert_rel_error(self, prob['aero_point_0.wing_perf.CL'][0], 0.5112640267782032, 1e-6)
-        assert_rel_error(self, prob['aero_point_0.CM'][1], -0.17919671624487307, 1e-6)
+        assert_rel_error(self, prob['aero_point_0.CM'][1], -1.735548800386354, 1e-6)
 
 
 

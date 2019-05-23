@@ -4,19 +4,11 @@ import unittest
 import numpy as np
 
 from openaerostruct.geometry.utils import generate_mesh
-from openaerostruct.geometry.geometry_group import Geometry
 
-from openaerostruct.integration.aerostruct_groups import Aerostruct, AerostructPoint
+from openaerostruct.integration.aerostruct_groups import AerostructGeometry, AerostructPoint
 
 from openmdao.api import IndepVarComp, Problem, Group, NewtonSolver, ScipyIterativeSolver, LinearBlockGS, NonlinearBlockGS, DirectSolver, LinearBlockGS, PetscKSP, ScipyOptimizeDriver
 
-try:
-    from openaerostruct.fortran import OAS_API
-    fortran_flag = True
-    data_type = float
-except:
-    fortran_flag = False
-    data_type = complex
 
 # Provide coordinates for a portion of an airfoil for the wingbox cross-section as an nparray with dtype=complex (to work with the complex-step approximation for derivatives).
 # These should be for an airfoil with the chord scaled to 1.
@@ -29,7 +21,6 @@ lower_x = np.array([0.1, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0
 upper_y = np.array([ 0.0447,  0.046,  0.0472,  0.0484,  0.0495,  0.0505,  0.0514,  0.0523,  0.0531,  0.0538, 0.0545,  0.0551,  0.0557, 0.0563,  0.0568, 0.0573,  0.0577,  0.0581,  0.0585,  0.0588,  0.0591,  0.0593,  0.0595,  0.0597,  0.0599,  0.06,    0.0601,  0.0602,  0.0602,  0.0602,  0.0602,  0.0602,  0.0601,  0.06,    0.0599,  0.0598,  0.0596,  0.0594,  0.0592,  0.0589,  0.0586,  0.0583,  0.058,   0.0576,  0.0572,  0.0568,  0.0563,  0.0558,  0.0553,  0.0547,  0.0541], dtype = 'complex128')
 lower_y = np.array([-0.0447, -0.046, -0.0473, -0.0485, -0.0496, -0.0506, -0.0515, -0.0524, -0.0532, -0.054, -0.0547, -0.0554, -0.056, -0.0565, -0.057, -0.0575, -0.0579, -0.0583, -0.0586, -0.0589, -0.0592, -0.0594, -0.0595, -0.0596, -0.0597, -0.0598, -0.0598, -0.0598, -0.0598, -0.0597, -0.0596, -0.0594, -0.0592, -0.0589, -0.0586, -0.0582, -0.0578, -0.0573, -0.0567, -0.0561, -0.0554, -0.0546, -0.0538, -0.0529, -0.0519, -0.0509, -0.0497, -0.0485, -0.0472, -0.0458, -0.0444], dtype = 'complex128')
 
-@unittest.skipUnless(fortran_flag, "Fortran is required.")
 class Test(unittest.TestCase):
 
     def test(self):
@@ -48,7 +39,6 @@ class Test(unittest.TestCase):
         surf_dict = {
                     # Wing definition
                     'name' : 'wing',        # name of the surface
-                    'type' : 'aerostruct',
                     'symmetry' : True,     # if true, model one half of wing
                                             # reflected across the plane y = 0
                     'S_ref_type' : 'wetted', # how we compute the wing area,
@@ -57,12 +47,8 @@ class Test(unittest.TestCase):
 
                     'spar_thickness_cp' : np.array([0.004, 0.005, 0.005, 0.008, 0.008, 0.01]), # [m]
                     'skin_thickness_cp' : np.array([0.005, 0.01, 0.015, 0.020, 0.025, 0.026]),
-                    'toverc_cp' : np.array([0.08, 0.08, 0.08, 0.10, 0.10, 0.08]),
-
                     'twist_cp' : np.array([4., 5., 8., 8., 8., 9.]),
                     'mesh' : mesh,
-                    'num_x' : mesh.shape[0],
-                    'num_y' : mesh.shape[1],
 
                     'data_x_upper' : upper_x,
                     'data_x_lower' : lower_x,
@@ -82,10 +68,11 @@ class Test(unittest.TestCase):
                     # Airfoil properties for viscous drag calculation
                     'k_lam' : 0.05,         # percentage of chord with laminar
                                             # flow, used for viscous drag
-                    't_over_c' : 0.12,      # thickness over chord ratio (NACA0015)
-                    'c_max_t' : .38,       # chordwise location of maximum (NACA0015)
-                                            # thickness
+                    't_over_c_cp' : np.array([0.08, 0.08, 0.08, 0.10, 0.10, 0.08]),
+                    'original_wingbox_airfoil_t_over_c' : 0.12,
+                    'c_max_t' : .38,       # chordwise location of maximum thickness
                     'with_viscous' : True,
+                    'with_wave' : True,     # if true, compute wave drag
 
                     # Structural values are based on aluminum 7075
                     'E' : 73.1e9,              # [Pa] Young's modulus
@@ -95,9 +82,11 @@ class Test(unittest.TestCase):
                     'strength_factor_for_upper_skin' : 1.0, # the yield stress is multiplied by this factor for the upper skin
                     # 'fem_origin' : 0.35,    # normalized chordwise location of the spar
                     'wing_weight_ratio' : 1.25,
-
+                    'struct_weight_relief' : True,    # True to add the weight of the structure to the loads on the structure
+                    'distributed_fuel_weight' : False,
                     # Constraints
                     'exact_failure_constraint' : False, # if false, use KS function
+                    'Wf_reserve' :15000.,       # [kg] reserve fuel mass
                     }
 
         surfaces = [surf_dict]
@@ -108,14 +97,14 @@ class Test(unittest.TestCase):
         # Add problem information as an independent variables component
         indep_var_comp = IndepVarComp()
         indep_var_comp.add_output('v', val=.85 * 295.07, units='m/s')
-        indep_var_comp.add_output('alpha', val=0.)
-        indep_var_comp.add_output('M', val=0.85)
+        indep_var_comp.add_output('alpha', val=0., units='deg')
+        indep_var_comp.add_output('Mach_number', val=0.85)
         indep_var_comp.add_output('re', val=0.348*295.07*.85*1./(1.43*1e-5), units='1/m')
         indep_var_comp.add_output('rho', val=0.348, units='kg/m**3')
         indep_var_comp.add_output('CT', val=0.53/3600, units='1/s')
         indep_var_comp.add_output('R', val=14.307e6, units='m')
-        indep_var_comp.add_output('W0', val=(143000 - 2.5*11600 + 34000) + 15000,  units='kg')
-        indep_var_comp.add_output('a', val=295.07, units='m/s')
+        indep_var_comp.add_output('W0', val=148000 + surf_dict['Wf_reserve'],  units='kg')
+        indep_var_comp.add_output('speed_of_sound', val=295.07, units='m/s')
         indep_var_comp.add_output('load_factor', val=1.)
         indep_var_comp.add_output('empty_cg', val=np.zeros((3)), units='m')
 
@@ -130,7 +119,7 @@ class Test(unittest.TestCase):
             # only for this surface
             name = surface['name']
 
-            aerostruct_group = Aerostruct(surface=surface)
+            aerostruct_group = AerostructGeometry(surface=surface)
 
             # Add tmp_group to the problem with the name of the surface.
             prob.model.add_subsystem(name, aerostruct_group)
@@ -149,35 +138,33 @@ class Test(unittest.TestCase):
             # Connect flow properties to the analysis point
             prob.model.connect('v', point_name + '.v')
             prob.model.connect('alpha', point_name + '.alpha')
-            prob.model.connect('M', point_name + '.M')
+            prob.model.connect('Mach_number', point_name + '.Mach_number')
             prob.model.connect('re', point_name + '.re')
             prob.model.connect('rho', point_name + '.rho')
             prob.model.connect('CT', point_name + '.CT')
             prob.model.connect('R', point_name + '.R')
             prob.model.connect('W0', point_name + '.W0')
-            prob.model.connect('a', point_name + '.a')
+            prob.model.connect('speed_of_sound', point_name + '.speed_of_sound')
             prob.model.connect('empty_cg', point_name + '.empty_cg')
             prob.model.connect('load_factor', point_name + '.load_factor')
 
             for surface in surfaces:
 
-                prob.model.connect('load_factor', name + '.load_factor')
-
                 com_name = point_name + '.' + name + '_perf.'
-                prob.model.connect(name + '.K', point_name + '.coupled.' + name + '.K')
+                prob.model.connect(name + '.local_stiff_transformed', point_name + '.coupled.' + name + '.local_stiff_transformed')
+                prob.model.connect(name + '.nodes', point_name + '.coupled.' + name + '.nodes')
 
                 # Connect aerodyamic mesh to coupled group mesh
                 prob.model.connect(name + '.mesh', point_name + '.coupled.' + name + '.mesh')
-                prob.model.connect(name + '.element_weights', point_name + '.coupled.' + name + '.element_weights')
+                prob.model.connect(name + '.element_mass', point_name + '.coupled.' + name + '.element_mass')
 
                 # Connect performance calculation variables
                 prob.model.connect(name + '.nodes', com_name + 'nodes')
                 prob.model.connect(name + '.cg_location', point_name + '.' + 'total_perf.' + name + '_cg_location')
-                prob.model.connect(name + '.structural_weight', point_name + '.' + 'total_perf.' + name + '_structural_weight')
+                prob.model.connect(name + '.structural_mass', point_name + '.' + 'total_perf.' + name + '_structural_mass')
 
                 # Connect wingbox properties to von Mises stress calcs
                 prob.model.connect(name + '.Qz', com_name + 'Qz')
-                prob.model.connect(name + '.Iz', com_name + 'Iz')
                 prob.model.connect(name + '.J', com_name + 'J')
                 prob.model.connect(name + '.A_enc', com_name + 'A_enc')
                 prob.model.connect(name + '.htop', com_name + 'htop')
@@ -186,7 +173,7 @@ class Test(unittest.TestCase):
                 prob.model.connect(name + '.hrear', com_name + 'hrear')
 
                 prob.model.connect(name + '.spar_thickness', com_name + 'spar_thickness')
-                prob.model.connect(name + '.skin_thickness', com_name + 'skin_thickness')
+                prob.model.connect(name + '.t_over_c', com_name + 't_over_c')
 
         from openmdao.api import ScipyOptimizeDriver
         prob.driver = ScipyOptimizeDriver()
@@ -210,16 +197,13 @@ class Test(unittest.TestCase):
         #                         hierarchical=False,
         #                         print_arrays=True)
 
-        print('fuelburn: ', prob['AS_point_0.fuelburn'][0])
-        print('structural_weight: ', prob['wing.structural_weight'][0]/1.25)
+        print(prob['AS_point_0.fuelburn'][0])
+        print(prob['wing.structural_mass'][0]/1.25)
+        print(prob['AS_point_0.wing_perf.failure'][0])
 
-        # Straight from Sham's version
-        # assert_rel_error(self, prob['AS_point_0.fuelburn'][0], 116775.0566890688, 1e-5)
-        # assert_rel_error(self, prob['wing.structural_weight'][0]/1.25, 235865.31541985113, 1e-5)
-
-        # Just using these values so tests pass for now
-        assert_rel_error(self, prob['AS_point_0.fuelburn'][0], 116987.20937886737, 1e-5)
-        assert_rel_error(self, prob['wing.structural_weight'][0]/1.25, 235533.42118541995, 1e-5)
+        assert_rel_error(self, prob['AS_point_0.fuelburn'][0], 112527.031936, 1e-5)
+        assert_rel_error(self, prob['wing.structural_mass'][0]/1.25, 24009.5230566, 1e-5)
+        assert_rel_error(self, prob['AS_point_0.wing_perf.failure'][0], 1.70644139941, 1e-5)
 
 
 if __name__ == '__main__':

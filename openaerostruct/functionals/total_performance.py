@@ -1,5 +1,4 @@
 from __future__ import division, print_function
-import numpy as np
 
 from openmdao.api import Group
 
@@ -18,14 +17,22 @@ class TotalPerformance(Group):
 
     def initialize(self):
         self.options.declare('surfaces', types=list)
+        self.options.declare('user_specified_Sref', types=bool)
+        self.options.declare('internally_connect_fuelburn', types=bool, default=True)
 
     def setup(self):
         surfaces = self.options['surfaces']
 
-        self.add_subsystem('sum_areas',
-             SumAreas(surfaces=surfaces),
-             promotes_inputs=['*S_ref'],
-             promotes_outputs=['S_ref_total'])
+        if not self.options['user_specified_Sref']:
+            self.add_subsystem('sum_areas',
+                SumAreas(surfaces=surfaces),
+                promotes_inputs=['*S_ref'],
+                promotes_outputs=['S_ref_total'])
+
+        if self.options['internally_connect_fuelburn']:
+            promote_fuelburn = ['fuelburn']
+        else:
+            promote_fuelburn = []
 
         self.add_subsystem('CL_CD',
              TotalLiftDrag(surfaces=surfaces),
@@ -34,17 +41,17 @@ class TotalPerformance(Group):
 
         self.add_subsystem('fuelburn',
              BreguetRange(surfaces=surfaces),
-             promotes_inputs=['*structural_weight', 'CL', 'CD', 'CT', 'a', 'R', 'M', 'W0', 'load_factor'],
+             promotes_inputs=['*structural_mass', 'CL', 'CD', 'CT', 'speed_of_sound', 'R', 'Mach_number', 'W0'],
              promotes_outputs=['fuelburn'])
 
         self.add_subsystem('L_equals_W',
              Equilibrium(surfaces=surfaces),
-             promotes_inputs=['*L', '*structural_weight', 'S_ref_total', 'fuelburn', 'W0', 'load_factor', 'rho', 'v'],
+             promotes_inputs=['CL', '*structural_mass', 'S_ref_total', 'W0', 'load_factor', 'rho', 'v'] + promote_fuelburn,
              promotes_outputs=['L_equals_W', 'total_weight'])
 
         self.add_subsystem('CG',
              CenterOfGravity(surfaces=surfaces),
-             promotes_inputs=['*structural_weight', '*cg_location', 'fuelburn', 'total_weight', 'W0', 'empty_cg', 'load_factor'],
+             promotes_inputs=['*structural_mass', '*cg_location', 'total_weight', 'W0', 'empty_cg', 'load_factor'] + promote_fuelburn,
              promotes_outputs=['cg'])
 
         self.add_subsystem('moment',

@@ -14,7 +14,7 @@ class ViscousDrag(ExplicitComponent):
     re : float
         Dimensionalized (1/length) Reynolds number. This is used to compute the
         local Reynolds number based on the local chord length.
-    M : float
+    Mach_number : float
         Mach number.
     S_ref : float
         The reference area of the lifting surface.
@@ -25,6 +25,8 @@ class ViscousDrag(ExplicitComponent):
         The spanwise width of each panel.
     lengths[ny] : numpy array
         The sum of the lengths of each line segment along a chord section.
+    t_over_c[ny-1] : numpy array
+        The streamwise thickness-to-chord ratio of each VLM panel.
 
     Returns
     -------
@@ -46,33 +48,32 @@ class ViscousDrag(ExplicitComponent):
         self.k_lam = surface['k_lam']
 
         # Thickness over chord for the airfoil
-        self.t_over_c = surface['t_over_c']
         self.c_max_t = surface['c_max_t']
 
-        ny = surface['num_y']
+        ny = surface['mesh'].shape[1]
 
         self.add_input('re', val=5.e6, units='1/m')
-        self.add_input('M', val=1.6)
+        self.add_input('Mach_number', val=1.6)
         self.add_input('S_ref', val=1., units='m**2')
         self.add_input('cos_sweep', val=np.ones((ny-1)), units='m')
         self.add_input('widths', val=np.ones((ny-1)), units='m')
         self.add_input('lengths', val=np.ones((ny)), units='m')
+        self.add_input('t_over_c', val=np.ones((ny-1)))
         self.add_output('CDv', val=0.)
 
         self.declare_partials('CDv', '*')
-        # self.declare_partials('CDv', 'M', method='fd')
-        # self.declare_partials('CDv', 're')
 
         self.set_check_partial_options(wrt='*', method='cs', step=1e-50)
 
     def compute(self, inputs, outputs):
         if self.with_viscous:
             re = inputs['re']
-            M = inputs['M']
+            M = inputs['Mach_number']
             S_ref = inputs['S_ref']
             widths = inputs['widths']
             lengths = inputs['lengths']
             cos_sweep = inputs['cos_sweep'] / widths
+            t_over_c = inputs['t_over_c']
 
             # Take panel chord length to be average of its edge lengths
             chords = (lengths[1:] + lengths[:-1]) / 2.
@@ -102,7 +103,7 @@ class ViscousDrag(ExplicitComponent):
 
             # Calculate form factor (Raymer Eq. 12.30)
             k_FF = 1.34 * M**0.18 * \
-                (1.0 + 0.6*self.t_over_c/self.c_max_t + 100*self.t_over_c**4)
+                (1.0 + 0.6*t_over_c/self.c_max_t + 100*t_over_c**4)
             FF = k_FF * cos_sweep**0.28
 
             # Sum individual panel drags to get total drag
@@ -120,11 +121,12 @@ class ViscousDrag(ExplicitComponent):
 
         partials['CDv', 'lengths'] = np.zeros_like(partials['CDv', 'lengths'])
         re = inputs['re']
+        t_over_c = inputs['t_over_c']
 
         if self.with_viscous:
-            p180 = np.pi / 180.
-            M = inputs['M'][0]
-            S_ref = inputs['S_ref'][0]
+
+            M = inputs['Mach_number']
+            S_ref = inputs['S_ref']
 
             widths = inputs['widths']
             lengths = inputs['lengths']
@@ -158,7 +160,7 @@ class ViscousDrag(ExplicitComponent):
 
             # Calculate form factor (Raymer Eq. 12.30)
             k_FF = 1.34 * M**0.18 * \
-                (1.0 + 0.6*self.t_over_c/self.c_max_t + 100*self.t_over_c**4)
+                (1.0 + 0.6*t_over_c/self.c_max_t + 100*t_over_c**4)
             FF = k_FF * cos_sweep**0.28
 
             # Sum individual panel drags to get total drag
@@ -197,7 +199,8 @@ class ViscousDrag(ExplicitComponent):
             partials['CDv', 'widths'][0, :] = d_over_q * FF / S_ref * 0.72
             partials['CDv', 'S_ref'] = - D_over_q / S_ref**2
             partials['CDv', 'cos_sweep'][0, :] = 0.28 * k_FF * d_over_q / S_ref / cos_sweep**0.72
-
+            partials['CDv', 't_over_c'] = (d_over_q * widths * 1.34 * M**0.18 * \
+                            (0.6/self.c_max_t + 400*t_over_c**3) * cos_sweep**0.28) / S_ref
 
             term =  (-0.65/(1+0.144*M**2)**1.65) * 2*0.144*M
             dcdturb_total__dM = 0.455 / (np.log10(Re_c))**2.58 * term
@@ -211,12 +214,12 @@ class ViscousDrag(ExplicitComponent):
                 dCd__dM = 0.
             dd_over_q__dM = 2*chords*dCd__dM
 
-            dk_ff__dM = 1.34*0.18*M**-0.82 * (1.0 + 0.6*self.t_over_c/self.c_max_t + 100*self.t_over_c**4)
+            dk_ff__dM = 1.34*0.18*M**-0.82 * (1.0 + 0.6*t_over_c/self.c_max_t + 100*t_over_c**4)
             dFF__dM = dk_ff__dM*cos_sweep**0.28
 
             dD_over_q__dM = np.sum(widths* (dd_over_q__dM*FF + dFF__dM*d_over_q))
 
-            partials['CDv','M'] = dD_over_q__dM / S_ref
+            partials['CDv','Mach_number'] = dD_over_q__dM / S_ref
 
             term = 0.455/(1+0.144*M**2)**0.65
             dRe_c__dRe = chords
@@ -241,5 +244,6 @@ class ViscousDrag(ExplicitComponent):
                 partials['CDv', 'widths'][0, :] *= 2
                 partials['CDv', 'S_ref'] *=  2
                 partials['CDv', 'cos_sweep'][0, :] *=  2
-                partials['CDv', 'M'][0, :] *=  2
+                partials['CDv', 'Mach_number'][0, :] *=  2
                 partials['CDv', 're'][0, :] *=  2
+                partials['CDv', 't_over_c'][0, :] *=  2

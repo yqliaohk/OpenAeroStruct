@@ -23,7 +23,6 @@ class Test(unittest.TestCase):
         mesh[:, :, 1] = np.linspace(0, span, ny)
         surface['mesh'] = mesh
         surface['name'] = 'wing'
-        surface['num_y'] = ny
 
         # The way this is currently set up, we don't actually use the values here
         surface['twist_cp'] = np.zeros((5))
@@ -33,11 +32,11 @@ class Test(unittest.TestCase):
         surface['zshear_cp'] = np.zeros((5))
 
         surface['span'] = span
-        surface['t_over_c'] = .12
+        surface['t_over_c_cp'] = np.array([.12])
 
         comp = GeometryMesh(surface=surface)
 
-        run_test(self, comp)
+        run_test(self, comp, complex_flag=True, method='cs')
 
 
 if __name__ == '__main__':

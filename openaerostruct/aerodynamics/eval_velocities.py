@@ -5,6 +5,34 @@ from openmdao.api import ExplicitComponent
 
 
 class EvalVelocities(ExplicitComponent):
+    """
+    Compute the total velocities at each of the evaluation points for every
+    panel in the entire system. This is the sum of the freestream and induced
+    velocities caused by the circulations.
+
+    Parameters
+    ----------
+    freestream_velocities[system_size, 3] : numpy array
+        The rotated freestream velocities at each evaluation point for all
+        lifting surfaces. system_size is the sum of the count of all panels
+        for all lifting surfaces.
+    circulations[system_size] : numpy array
+        The vortex ring circulations obtained from solving the AIC linear
+        system.
+    vel_mtx[num_eval_points, nx - 1, ny - 1, 3] : numpy array
+        The AIC matrix for the all lifting surfaces representing the aircraft.
+        This has some sparsity pattern, but it is more dense than the FEM matrix
+        and the entries have a wide range of magnitudes. One exists for each
+        combination of surface name and evaluation points name.
+
+    Returns
+    -------
+    velocities[num_eval_points, 3] : numpy array
+        The actual velocities experienced at the evaluation points for each
+        lifting surface in the system. This is the summation of the freestream
+        velocities and the induced velocities caused by the circulations.
+
+    """
 
     def initialize(self):
         self.options.declare('surfaces', types=list)
@@ -18,21 +46,25 @@ class EvalVelocities(ExplicitComponent):
 
         system_size = 0
 
+        # Determine system_size by looping through each surface and summing
+        # the number of panels.
         for surface in surfaces:
-            ny = surface['num_y']
-            nx = surface['num_x']
-            name = surface['name']
-
+            mesh = surface['mesh']
+            nx = mesh.shape[0]
+            ny = mesh.shape[1]
             system_size += (nx - 1) * (ny - 1)
 
         self.system_size = system_size
 
-        velocities_name = '{}_velocities'.format(eval_name)
-
-        self.add_input('inflow_velocities', shape=(system_size, 3), units='m/s')
+        self.add_input('freestream_velocities', shape=(system_size, 3), units='m/s')
         self.add_input('circulations', shape=system_size, units='m**2/s')
+
+        # Get the correct output name; the velocities output depends on which
+        # set of evaluation points we use, either collocation or force.
+        velocities_name = '{}_velocities'.format(eval_name)
         self.add_output(velocities_name, shape=(num_eval_points, 3), units='m/s')
 
+        # Set up indices to create the sparsity pattern for the derivatives.
         circulations_indices = np.arange(system_size)
         velocities_indices = np.arange(num_eval_points * 3).reshape((num_eval_points, 3))
 
@@ -43,16 +75,21 @@ class EvalVelocities(ExplicitComponent):
                 np.ones((num_eval_points, 3), int), circulations_indices).flatten(),
         )
 
-        self.declare_partials(velocities_name, 'inflow_velocities', val=1.,
+        # These derivatives are linear and don't change so we set the val here
+        self.declare_partials(velocities_name, 'freestream_velocities', val=1.,
             rows=np.arange(3 * num_eval_points),
             cols=np.arange(3 * num_eval_points),
         )
 
+        # For each surface we need to correctly set up the sparsity pattern
+        # based on the vel_mtx. This is pretty hairy due to the highly
+        # dimensional nature of the vel_mtx.
         ind_1 = 0
         ind_2 = 0
         for surface in surfaces:
-            ny = surface['num_y']
-            nx = surface['num_x']
+            mesh = surface['mesh']
+            nx = mesh.shape[0]
+            ny = mesh.shape[1]
             name = surface['name']
             num = (nx - 1) * (ny - 1)
 
@@ -78,17 +115,18 @@ class EvalVelocities(ExplicitComponent):
         eval_name = self.options['eval_name']
         num_eval_points = self.options['num_eval_points']
 
-        system_size = self.system_size
-
         velocities_name = '{}_velocities'.format(eval_name)
 
-        outputs[velocities_name] = inputs['inflow_velocities']
+        # Start with just the freestream velocities as the base for the output
+        # velocities.
+        outputs[velocities_name] = inputs['freestream_velocities']
 
         ind_1 = 0
         ind_2 = 0
         for surface in surfaces:
-            ny = surface['num_y']
-            nx = surface['num_x']
+            mesh = surface['mesh']
+            nx = mesh.shape[0]
+            ny = mesh.shape[1]
             name = surface['name']
             num = (nx - 1) * (ny - 1)
 
@@ -96,12 +134,9 @@ class EvalVelocities(ExplicitComponent):
 
             vel_mtx_name = '{}_{}_vel_mtx'.format(name, eval_name)
 
+            # Add the induced velocities; the contributions from the
+            # circulations.
             outputs[velocities_name] += np.einsum('ijk,j->ik',
-                inputs[vel_mtx_name].reshape((num_eval_points, num, 3)),
-                inputs['circulations'][ind_1:ind_2],
-            )
-
-            tmp = np.einsum('ijk,j->ik',
                 inputs[vel_mtx_name].reshape((num_eval_points, num, 3)),
                 inputs['circulations'][ind_1:ind_2],
             )
@@ -122,8 +157,9 @@ class EvalVelocities(ExplicitComponent):
         ind_1 = 0
         ind_2 = 0
         for surface in surfaces:
-            ny = surface['num_y']
-            nx = surface['num_x']
+            mesh = surface['mesh']
+            nx = mesh.shape[0]
+            ny = mesh.shape[1]
             name = surface['name']
             num = (nx - 1) * (ny - 1)
 
